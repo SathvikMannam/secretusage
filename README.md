@@ -24,7 +24,7 @@ Tracked reference paths include container `env`, `envFrom`, Secret volumes, proj
 helm install secretusage-controller ./charts/secretusage-controller \
   --namespace secretusage-system \
   --create-namespace \
-  --set image.repository=docker.io/sathvikmannam/secretusage \
+  --set image.repository=docker.io/sathvikm2002/secretusage \
   --set image.tag=latest
 ```
 

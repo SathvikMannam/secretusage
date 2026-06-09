@@ -1,4 +1,4 @@
-IMG ?= docker.io/sathvikmannam/secretusage:latest
+IMG ?= docker.io/sathvikm2002/secretusage:latest
 CHART ?= charts/secretusage-controller
 CONTROLLER_GEN ?= go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.16.5
 

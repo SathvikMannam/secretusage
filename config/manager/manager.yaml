@@ -18,7 +18,7 @@ spec:
       serviceAccountName: secretusage-controller-manager
       containers:
         - name: manager
-          image: docker.io/sathvikmannam/secretusage:latest
+          image: docker.io/sathvikm2002/secretusage:latest
           imagePullPolicy: IfNotPresent
           args:
             - --leader-elect
