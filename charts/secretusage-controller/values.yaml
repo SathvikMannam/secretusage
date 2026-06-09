@@ -1,7 +1,7 @@
 replicaCount: 1
 
 image:
-  repository: ghcr.io/sathvikmannam/secretusage
+  repository: docker.io/sathvikmannam/secretusage
   pullPolicy: IfNotPresent
   tag: latest
 
