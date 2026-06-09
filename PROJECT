@@ -1,0 +1,18 @@
+domain: secretusage.io
+layout:
+- go.kubebuilder.io/v4
+plugins:
+  go.sdk.operatorframework.io/v1: {}
+projectName: secretusage
+repo: github.com/SathvikMannam/secretusage
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: secretusage.io
+  group: usage
+  kind: SecretUsage
+  path: github.com/SathvikMannam/secretusage/api/v1alpha1
+  version: v1alpha1
+version: "3"

@@ -1,0 +1,5 @@
+namespace: secretusage-system
+resources:
+  - ../crd/bases/usage.secretusage.io_secretusages.yaml
+  - ../rbac
+  - ../manager/manager.yaml

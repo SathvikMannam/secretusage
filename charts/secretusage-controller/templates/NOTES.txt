@@ -1,0 +1,5 @@
+SecretUsage controller is installed.
+
+List tracked Secret usage:
+  kubectl get secretusage -A
+  kubectl get su -A

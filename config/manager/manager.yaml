@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: secretusage-controller-manager
+  namespace: secretusage-system
+  labels:
+    control-plane: secretusage-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      control-plane: secretusage-controller
+  template:
+    metadata:
+      labels:
+        control-plane: secretusage-controller
+    spec:
+      serviceAccountName: secretusage-controller-manager
+      containers:
+        - name: manager
+          image: ghcr.io/sathvikmannam/secretusage:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - --leader-elect
+          ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+          resources:
+            limits:
+              cpu: 500m
+              memory: 128Mi
+            requests:
+              cpu: 10m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+      securityContext:
+        runAsNonRoot: true

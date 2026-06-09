@@ -1,0 +1,7 @@
+.git/
+.github/
+.DS_Store
+*.swp
+*.tmp
+charts/secretusage-controller/charts/
+charts/secretusage-controller/*.tgz
