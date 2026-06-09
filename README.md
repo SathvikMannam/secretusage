@@ -20,6 +20,18 @@ Tracked reference paths include container `env`, `envFrom`, Secret volumes, proj
 
 ## Install With Helm
 
+Install the published OCI chart:
+
+```sh
+helm install secretusage-controller \
+  oci://registry-1.docker.io/sathvikm2002/secretusage-controller \
+  --version 0.1.0 \
+  --namespace secretusage-system \
+  --create-namespace
+```
+
+Or install from a local checkout:
+
 ```sh
 helm install secretusage-controller ./charts/secretusage-controller \
   --namespace secretusage-system \
