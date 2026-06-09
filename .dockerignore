@@ -1,0 +1,10 @@
+.git/
+work/
+outputs/
+bin/
+dist/
+*.test
+*.out
+.DS_Store
+charts/secretusage-controller/charts/
+charts/secretusage-controller/*.tgz
