@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"sort"
 	"time"
@@ -11,10 +12,14 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -57,6 +62,13 @@ type SecretUsageReconciler struct {
 
 	// PerSecretMetrics enables the per-Secret gauges. Aggregate gauges are always on.
 	PerSecretMetrics bool
+
+	// Rules track Secret references in custom resources. They are loaded once at
+	// startup because a field index cannot be registered after the cache has started.
+	Rules []CompiledRule
+
+	// rulesByGVK indexes Rules for event handling, and is built by SetupWithManager.
+	rulesByGVK map[schema.GroupVersionKind]CompiledRule
 }
 
 // +kubebuilder:rbac:groups=usage.secretusage.io,resources=secretusages,verbs=get;list;watch;create;update;patch;delete
@@ -218,6 +230,7 @@ func (r *SecretUsageReconciler) collectUsages(ctx context.Context, namespace, se
 		r.collectReplicationControllerUsages,
 		r.collectServiceAccountUsages,
 		r.collectIngressUsages,
+		r.collectCustomResourceUsages,
 	}
 
 	for _, collect := range collectors {
@@ -362,6 +375,46 @@ func (r *SecretUsageReconciler) collectIngressUsages(ctx context.Context, namesp
 	return usages, nil
 }
 
+// collectCustomResourceUsages walks the configured rules. Each rule's kind has its own
+// field index, so this is the same indexed lookup the built-in kinds use.
+func (r *SecretUsageReconciler) collectCustomResourceUsages(ctx context.Context, namespace, secretName string) ([]usagev1alpha1.SecretUsageReference, error) {
+	if len(r.Rules) == 0 {
+		return nil, nil
+	}
+
+	usages := make([]usagev1alpha1.SecretUsageReference, 0)
+	for _, rule := range r.Rules {
+		var list unstructured.UnstructuredList
+		list.SetGroupVersionKind(rule.GVK)
+		if err := r.List(ctx, &list, indexedSecretListOptions(namespace, secretName)...); err != nil {
+			return nil, fmt.Errorf("list %s: %w", rule.GVK, err)
+		}
+		for i := range list.Items {
+			usages = append(usages, ruleUsageReferences(rule, &list.Items[i], secretName)...)
+		}
+	}
+	return usages, nil
+}
+
+// ruleUsageReferences converts a rule match into status entries.
+func ruleUsageReferences(rule CompiledRule, obj *unstructured.Unstructured, secretName string) []usagev1alpha1.SecretUsageReference {
+	var usages []usagev1alpha1.SecretUsageReference
+	for _, ref := range rule.references(obj) {
+		if ref.SecretName != secretName {
+			continue
+		}
+		usages = append(usages, usagev1alpha1.SecretUsageReference{
+			APIVersion: rule.GVK.GroupVersion().String(),
+			Kind:       rule.GVK.Kind,
+			Namespace:  obj.GetNamespace(),
+			Name:       obj.GetName(),
+			UID:        string(obj.GetUID()),
+			FieldPath:  ref.FieldPath,
+		})
+	}
+	return usages
+}
+
 func indexedSecretListOptions(namespace, secretName string) []client.ListOption {
 	return []client.ListOption{
 		client.InNamespace(namespace),
@@ -396,6 +449,10 @@ func (r *SecretUsageReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		}
 	}
 
+	if err := r.setupRules(mgr); err != nil {
+		return err
+	}
+
 	if err := mgr.Add(manager.RunnableFunc(r.runAggregateMetrics)); err != nil {
 		return err
 	}
@@ -406,6 +463,9 @@ func (r *SecretUsageReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(secretMetadataObject())
 	for _, obj := range IndexedObjects() {
 		builder = builder.Watches(obj, consumerHandler)
+	}
+	for _, rule := range r.Rules {
+		builder = builder.Watches(rule.Object(), consumerHandler)
 	}
 
 	// Only Create and Delete are watched on SecretUsage. Every status write this
@@ -422,6 +482,68 @@ func (r *SecretUsageReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			},
 		}).
 		Complete(r)
+}
+
+// setupRules drops rules whose CRD is not installed and registers a field index for
+// each of the rest. A rule for an absent kind would otherwise fail cache sync and
+// crash-loop the manager, which is a poor trade for one optional integration.
+func (r *SecretUsageReconciler) setupRules(mgr ctrl.Manager) error {
+	if len(r.Rules) == 0 {
+		return nil
+	}
+
+	logger := mgr.GetLogger().WithName("rules")
+	discoveryClient, err := discovery.NewDiscoveryClientForConfig(mgr.GetConfig())
+	if err != nil {
+		return fmt.Errorf("build discovery client: %w", err)
+	}
+
+	installed := make([]CompiledRule, 0, len(r.Rules))
+	for _, rule := range r.Rules {
+		present, err := kindIsInstalled(discoveryClient, rule.GVK)
+		if err != nil {
+			return fmt.Errorf("check %s: %w", rule.GVK, err)
+		}
+		if !present {
+			logger.Info("skipping rule, kind is not installed in this cluster",
+				"apiVersion", rule.GVK.GroupVersion().String(), "kind", rule.GVK.Kind)
+			continue
+		}
+		installed = append(installed, rule)
+	}
+	r.Rules = installed
+
+	r.rulesByGVK = make(map[schema.GroupVersionKind]CompiledRule, len(r.Rules))
+	for _, rule := range r.Rules {
+		r.rulesByGVK[rule.GVK] = rule
+
+		indexRule := rule
+		if err := mgr.GetFieldIndexer().IndexField(context.Background(), indexRule.Object(), SecretNameIndexField, func(raw client.Object) []string {
+			return indexRule.secretNames(raw)
+		}); err != nil {
+			return fmt.Errorf("index %s: %w", indexRule.GVK, err)
+		}
+		logger.Info("tracking custom resource",
+			"apiVersion", rule.GVK.GroupVersion().String(), "kind", rule.GVK.Kind)
+	}
+	return nil
+}
+
+// kindIsInstalled reports whether the cluster serves the given kind.
+func kindIsInstalled(discoveryClient discovery.DiscoveryInterface, gvk schema.GroupVersionKind) (bool, error) {
+	resources, err := discoveryClient.ServerResourcesForGroupVersion(gvk.GroupVersion().String())
+	if err != nil {
+		if apierrors.IsNotFound(err) || meta.IsNoMatchError(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	for _, resource := range resources.APIResources {
+		if resource.Kind == gvk.Kind {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func secretMetadataObject() *metav1.PartialObjectMetadata {
@@ -472,6 +594,18 @@ func (r *SecretUsageReconciler) runAggregateMetrics(ctx context.Context) error {
 	}
 }
 
+// secretNamesFor dispatches between the built-in extractor and the configured rules.
+func (r *SecretUsageReconciler) secretNamesFor(obj client.Object) []string {
+	if unstructuredObj, ok := obj.(*unstructured.Unstructured); ok {
+		rule, found := r.rulesByGVK[unstructuredObj.GroupVersionKind()]
+		if !found {
+			return nil
+		}
+		return rule.secretNames(unstructuredObj)
+	}
+	return SecretNamesForObject(obj)
+}
+
 func (r *SecretUsageReconciler) enqueueForSecretConsumer() handler.EventHandler {
 	return handler.Funcs{
 		CreateFunc: func(ctx context.Context, e event.CreateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
@@ -500,7 +634,7 @@ func (r *SecretUsageReconciler) enqueueObjectSecretReferences(obj client.Object,
 		return
 	}
 	namespace := obj.GetNamespace()
-	for _, secretName := range SecretNamesForObject(obj) {
+	for _, secretName := range r.secretNamesFor(obj) {
 		q.Add(reconcile.Request{
 			NamespacedName: types.NamespacedName{
 				Namespace: namespace,

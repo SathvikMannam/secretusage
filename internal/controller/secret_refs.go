@@ -54,7 +54,12 @@ func PodIsCoveredByController(pod *corev1.Pod) bool {
 
 // SecretNamesForObject returns sorted unique Secret names referenced by obj.
 func SecretNamesForObject(obj client.Object) []string {
-	refs := referencesForObject(obj)
+	return uniqueSortedSecretNames(referencesForObject(obj))
+}
+
+// uniqueSortedSecretNames collapses references to the distinct Secret names they
+// point at, which is the shape the field index needs.
+func uniqueSortedSecretNames(refs []objectSecretReference) []string {
 	if len(refs) == 0 {
 		return nil
 	}

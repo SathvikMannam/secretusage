@@ -40,6 +40,7 @@ func main() {
 	var trackOwnedPods bool
 	var trackUnusedSecrets bool
 	var perSecretMetrics bool
+	var rulesFile string
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -53,11 +54,21 @@ func main() {
 		"Keep a SecretUsage object for Secrets that exist but have no references, so unused Secrets are reportable. Costs one object per Secret.")
 	flag.BoolVar(&perSecretMetrics, "per-secret-metrics", envBool("PER_SECRET_METRICS", true),
 		"Export per-Secret gauges. Disable on clusters where three series per Secret is too much cardinality; aggregate gauges stay on.")
+	flag.StringVar(&rulesFile, "rules-file", os.Getenv("RULES_FILE"),
+		"Path to a YAML file of custom-resource reference rules. Empty disables custom-resource tracking.")
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	// Rules are compiled before the manager starts so a malformed rules file fails
+	// fast and visibly instead of leaving a kind silently untracked.
+	rules, err := controller.LoadRules(rulesFile)
+	if err != nil {
+		ctrl.Log.Error(err, "unable to load reference rules", "rulesFile", rulesFile)
+		os.Exit(1)
+	}
 
 	managerOptions := ctrl.Options{
 		Scheme: scheme,
@@ -108,6 +119,7 @@ func main() {
 		TrackOwnedPods:     trackOwnedPods,
 		TrackUnusedSecrets: trackUnusedSecrets,
 		PerSecretMetrics:   perSecretMetrics,
+		Rules:              rules,
 	}).SetupWithManager(mgr); err != nil {
 		ctrl.Log.Error(err, "unable to create controller", "controller", "SecretUsage")
 		os.Exit(1)
@@ -127,6 +139,7 @@ func main() {
 		"maxUsages", maxUsages,
 		"trackOwnedPods", trackOwnedPods,
 		"trackUnusedSecrets", trackUnusedSecrets,
+		"customRules", len(rules),
 	)
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		ctrl.Log.Error(err, "problem running manager")

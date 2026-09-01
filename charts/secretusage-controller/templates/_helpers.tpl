@@ -118,4 +118,17 @@ call sites indent it with nindent.
     - get
     - list
     - watch
+{{- range $rule := .Values.customRules }}
+{{- $group := "" }}
+{{- $parts := splitList "/" $rule.apiVersion }}
+{{- if gt (len $parts) 1 }}{{ $group = index $parts 0 }}{{ end }}
+- apiGroups:
+    - {{ $group | quote }}
+  resources:
+    - {{ required (printf "customRules entry %s/%s must set 'resource' (the plural name) so RBAC can be generated" $rule.apiVersion $rule.kind) $rule.resource }}
+  verbs:
+    - get
+    - list
+    - watch
+{{- end }}
 {{- end }}

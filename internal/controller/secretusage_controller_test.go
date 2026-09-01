@@ -10,7 +10,9 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -111,6 +113,13 @@ func TestReconcileDeletesSecretUsageWhenNoReferencesRemain(t *testing.T) {
 
 func newFakeReconciler(t *testing.T, objects ...client.Object) *SecretUsageReconciler {
 	t.Helper()
+	return newFakeReconcilerWithRules(t, nil, objects...)
+}
+
+// newFakeReconcilerWithRules also registers a scheme entry and field index for each
+// rule's kind, which is what SetupWithManager does against a real cluster.
+func newFakeReconcilerWithRules(t *testing.T, rules []CompiledRule, objects ...client.Object) *SecretUsageReconciler {
+	t.Helper()
 
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
@@ -132,10 +141,23 @@ func newFakeReconciler(t *testing.T, objects ...client.Object) *SecretUsageRecon
 		})
 	}
 
+	rulesByGVK := make(map[schema.GroupVersionKind]CompiledRule, len(rules))
+	for _, rule := range rules {
+		indexRule := rule
+		rulesByGVK[indexRule.GVK] = indexRule
+		scheme.AddKnownTypeWithName(indexRule.GVK, &unstructured.Unstructured{})
+		scheme.AddKnownTypeWithName(indexRule.GVK.GroupVersion().WithKind(indexRule.GVK.Kind+"List"), &unstructured.UnstructuredList{})
+		builder = builder.WithIndex(indexRule.Object(), SecretNameIndexField, func(raw client.Object) []string {
+			return indexRule.secretNames(raw)
+		})
+	}
+
 	return &SecretUsageReconciler{
 		Client:             builder.Build(),
 		Scheme:             scheme,
 		TrackUnusedSecrets: true,
+		Rules:              rules,
+		rulesByGVK:         rulesByGVK,
 	}
 }
 

@@ -44,21 +44,66 @@ maintained, queryable API object and per-Secret metrics.
 | …and the volume `secretRef` fields | `csi.nodePublishSecretRef`, `azureFile.secretName`, `cephfs`, `cinder`, `flexVolume`, `iscsi`, `rbd`, `scaleIO`, `storageos` |
 | ServiceAccount | `secrets[]`, `imagePullSecrets[]` |
 | Ingress | `spec.tls[].secretName` |
+| Any custom resource | JSONPath expressions you configure — see [Custom resources](#custom-resources) |
 
 Every entry in `.status.usages` carries the exact `fieldPath` (for example
 `.spec.template.spec.containers[0].env[2].valueFrom.secretKeyRef.name`), the container
 name where applicable, the referenced `key`, and whether the reference is `optional`.
 
-Secrets referenced from custom resources — cert-manager `Certificate`, ExternalSecrets,
-Istio gateway `credentialName`, and so on — are **not** tracked. See
-[Limitations](#limitations).
+Custom resources — cert-manager `Certificate`, ExternalSecrets, Istio `Gateway`, and so
+on — are tracked through [configurable rules](#custom-resources).
+
+## Custom resources
+
+Most Secrets in a modern cluster are named by a CRD rather than a pod spec. Enumerating
+every operator's Secret fields in Go does not scale, so custom kinds are configuration:
+a list of `apiVersion` + `kind` + JSONPath expressions that evaluate to Secret names.
+
+```yaml
+# values.yaml
+customRules:
+  - apiVersion: cert-manager.io/v1
+    kind: Certificate
+    resource: certificates
+    paths:
+      - .spec.secretName
+  - apiVersion: networking.istio.io/v1beta1
+    kind: Gateway
+    resource: gateways
+    paths:
+      - .spec.servers[*].tls.credentialName
+  - apiVersion: external-secrets.io/v1beta1
+    kind: ExternalSecret
+    resource: externalsecrets
+    paths:
+      - .spec.target.name
+```
+
+Each rule gets its own field index and watch, so custom kinds are as cheap to query as
+the built-in ones. The chart renders the ConfigMap, the RBAC for those kinds — `resource`
+is the plural name and exists so you do not restate every kind in a second place — and a
+checksum annotation that rolls the manager when the rules change.
+
+Behaviour worth knowing:
+
+- **A rule for a kind whose CRD is not installed is skipped with a log line**, not a
+  startup failure, so one rules list can be shared across clusters.
+- **A malformed rule is a startup failure.** A bad JSONPath, an unknown field, a
+  duplicate kind, or a rule for a kind already tracked natively (which would double
+  count) all refuse to start rather than silently leaving a Secret looking unused.
+- **Rules are read once at startup.** A field index cannot be registered after the cache
+  has started, so a rules change requires a restart — which the chart's checksum
+  annotation triggers for you.
+- Paths accept `{.spec.secretName}` or `.spec.secretName`; `[*]` works. Secret names are
+  resolved in the object's own namespace, and `.status.usages[].fieldPath` records the
+  expression that matched.
 
 ## Install
 
 ```sh
 helm install secretusage-controller \
   oci://registry-1.docker.io/sathvikm2002/secretusage-controller \
-  --version 0.2.0 \
+  --version 0.3.0 \
   --namespace secretusage-system \
   --create-namespace
 ```
@@ -217,19 +262,22 @@ per reconcile, so startup does not become `O(n²)` in the number of tracked Secr
 | `tracking.maxUsages` | `500` | Cap on references recorded per object |
 | `tracking.ownedPods` | `false` | Record Pods already covered by their controller |
 | `tracking.unusedSecrets` | `true` | Keep objects for unreferenced Secrets |
+| `customRules` | `[]` | Secret references to track inside custom resources |
 | `metrics.perSecret` | `true` | Export per-Secret gauges |
 | `leaderElection.enabled` | `true` | Run one active replica |
 
 Each maps to a flag on the manager (`--max-usages`, `--track-owned-pods`,
-`--track-unused-secrets`, `--per-secret-metrics`).
+`--track-unused-secrets`, `--per-secret-metrics`, `--rules-file`).
 
 ## Limitations
 
-- **Custom resources are not tracked.** cert-manager `Certificate.spec.secretName`,
-  ExternalSecrets, Istio `credentialName`, ArgoCD repository credentials, and Prometheus
-  operator Secret fields are invisible to it. Enumerating these in Go does not scale;
-  the intended fix is a config-driven extractor taking GVK + JSONPath rules, which is
-  not implemented yet.
+- **Custom resources are tracked only where you configure them.** There is no built-in
+  catalogue of operator Secret fields; `customRules` has to name the kinds you care
+  about, and a Secret named by a kind you have not configured still looks unused.
+- **Custom-resource rules assume same-namespace references.** A CRD field that names a
+  Secret in another namespace is resolved against the object's own namespace.
+- **Cluster-scoped custom resources are not supported**, since both Secrets and
+  `SecretUsage` are namespaced.
 - **References, not usage.** This tracks which objects *name* a Secret. It cannot tell
   you who actually *read* one — that only comes from API server audit logs.
 - **`usageCount` counts references, not workloads.** A Deployment and its ReplicaSets

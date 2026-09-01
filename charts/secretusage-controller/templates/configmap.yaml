@@ -1,0 +1,13 @@
+{{- if .Values.customRules }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "secretusage-controller.fullname" . }}-rules
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "secretusage-controller.labels" . | nindent 4 }}
+data:
+  rules.yaml: |
+    rules:
+      {{- toYaml .Values.customRules | nindent 6 }}
+{{- end }}

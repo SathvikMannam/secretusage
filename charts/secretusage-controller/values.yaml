@@ -62,6 +62,37 @@ resources:
     cpu: 10m
     memory: 64Mi
 
+# Track Secret references inside custom resources. Each entry needs the apiVersion,
+# kind, the plural 'resource' (used to generate RBAC), and JSONPath expressions that
+# evaluate to Secret names in the same namespace as the object. Rules for kinds whose
+# CRD is not installed are skipped with a log line rather than failing startup, so a
+# shared list is safe across clusters. Changing this restarts the manager, because a
+# field index cannot be registered after the cache has started.
+#
+# customRules:
+#   - apiVersion: cert-manager.io/v1
+#     kind: Certificate
+#     resource: certificates
+#     paths:
+#       - .spec.secretName
+#   - apiVersion: external-secrets.io/v1beta1
+#     kind: ExternalSecret
+#     resource: externalsecrets
+#     paths:
+#       - .spec.target.name
+#       - .spec.secretStoreRef.name
+#   - apiVersion: networking.istio.io/v1beta1
+#     kind: Gateway
+#     resource: gateways
+#     paths:
+#       - .spec.servers[*].tls.credentialName
+#   - apiVersion: monitoring.coreos.com/v1
+#     kind: Alertmanager
+#     resource: alertmanagers
+#     paths:
+#       - .spec.configSecret
+customRules: []
+
 nodeSelector: {}
 tolerations: []
 affinity: {}
