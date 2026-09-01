@@ -9,7 +9,23 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
+# Restrict the controller to a single namespace. When set, the chart also renders a
+# namespaced Role instead of a ClusterRole, so the install cannot read Secrets
+# anywhere else.
 watchNamespace: ""
+
+tracking:
+  # Maximum references recorded in one SecretUsage object. Keeps objects well below
+  # the etcd per-object size limit; .status.usageCount always reports the true total
+  # and .status.truncated marks objects where the list was cut short.
+  maxUsages: 500
+  # Record Pods whose references are already covered by their controller. Off by
+  # default: those Pods add no information and their churn rewrites status on every
+  # rollout. Standalone Pods are always recorded regardless of this setting.
+  ownedPods: false
+  # Keep a SecretUsage object for Secrets that exist but are referenced by nothing.
+  # This is what makes unused Secrets reportable, at the cost of one object per Secret.
+  unusedSecrets: true
 
 leaderElection:
   enabled: true
@@ -27,9 +43,13 @@ podLabels: {}
 
 podSecurityContext:
   runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
 
+# The manager writes nothing to disk, so the root filesystem can be read-only.
 securityContext:
   allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
   capabilities:
     drop:
       - ALL
@@ -42,12 +62,46 @@ resources:
     cpu: 10m
     memory: 64Mi
 
+# Track Secret references inside custom resources. Each entry needs the apiVersion,
+# kind, the plural 'resource' (used to generate RBAC), and JSONPath expressions that
+# evaluate to Secret names in the same namespace as the object. Rules for kinds whose
+# CRD is not installed are skipped with a log line rather than failing startup, so a
+# shared list is safe across clusters. Changing this restarts the manager, because a
+# field index cannot be registered after the cache has started.
+#
+# customRules:
+#   - apiVersion: cert-manager.io/v1
+#     kind: Certificate
+#     resource: certificates
+#     paths:
+#       - .spec.secretName
+#   - apiVersion: external-secrets.io/v1beta1
+#     kind: ExternalSecret
+#     resource: externalsecrets
+#     paths:
+#       - .spec.target.name
+#       - .spec.secretStoreRef.name
+#   - apiVersion: networking.istio.io/v1beta1
+#     kind: Gateway
+#     resource: gateways
+#     paths:
+#       - .spec.servers[*].tls.credentialName
+#   - apiVersion: monitoring.coreos.com/v1
+#     kind: Alertmanager
+#     resource: alertmanagers
+#     paths:
+#       - .spec.configSecret
+customRules: []
+
 nodeSelector: {}
 tolerations: []
 affinity: {}
 
 metrics:
   enabled: true
+  # Per-Secret gauges cost three series per tracked Secret. Disable on very large
+  # clusters; the aggregate gauges stay available either way.
+  perSecret: true
   service:
     type: ClusterIP
     port: 8080

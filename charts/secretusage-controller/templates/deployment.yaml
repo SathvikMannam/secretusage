@@ -11,10 +11,15 @@ spec:
       {{- include "secretusage-controller.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with .Values.podAnnotations }}
       annotations:
+        {{- if .Values.customRules }}
+        # A rules change needs a restart: field indexes cannot be registered after the
+        # cache has started, so the manager reads the rules file once at startup.
+        checksum/rules: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
       labels:
         {{- include "secretusage-controller.selectorLabels" . | nindent 8 }}
         {{- with .Values.podLabels }}
@@ -32,10 +37,19 @@ spec:
         - name: manager
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          {{- if .Values.leaderElection.enabled }}
           args:
+            {{- if .Values.leaderElection.enabled }}
             - --leader-elect
-          {{- end }}
+            {{- end }}
+            - --metrics-bind-address=:{{ .Values.metrics.service.port }}
+            - --health-probe-bind-address=:{{ .Values.healthProbe.port }}
+            - --max-usages={{ .Values.tracking.maxUsages }}
+            - --track-owned-pods={{ .Values.tracking.ownedPods }}
+            - --track-unused-secrets={{ .Values.tracking.unusedSecrets }}
+            - --per-secret-metrics={{ .Values.metrics.perSecret }}
+            {{- if .Values.customRules }}
+            - --rules-file=/etc/secretusage/rules.yaml
+            {{- end }}
           {{- if .Values.watchNamespace }}
           env:
             - name: WATCH_NAMESPACE
@@ -43,7 +57,7 @@ spec:
           {{- end }}
           ports:
             - name: metrics
-              containerPort: 8080
+              containerPort: {{ .Values.metrics.service.port }}
               protocol: TCP
             - name: health
               containerPort: {{ .Values.healthProbe.port }}
@@ -60,6 +74,18 @@ spec:
             {{- toYaml .Values.resources | nindent 12 }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- if .Values.customRules }}
+          volumeMounts:
+            - name: rules
+              mountPath: /etc/secretusage
+              readOnly: true
+          {{- end }}
+      {{- if .Values.customRules }}
+      volumes:
+        - name: rules
+          configMap:
+            name: {{ include "secretusage-controller.fullname" . }}-rules
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

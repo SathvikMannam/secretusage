@@ -1,4 +1,33 @@
 {{- if .Values.rbac.create -}}
+{{- if .Values.watchNamespace }}
+# Scoping the controller to one namespace scopes its permissions to that namespace
+# too. A namespaced install can never read a Secret outside .Values.watchNamespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "secretusage-controller.fullname" . }}
+  namespace: {{ .Values.watchNamespace }}
+  labels:
+    {{- include "secretusage-controller.labels" . | nindent 4 }}
+rules:
+  {{- include "secretusage-controller.rules" . | nindent 2 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "secretusage-controller.fullname" . }}
+  namespace: {{ .Values.watchNamespace }}
+  labels:
+    {{- include "secretusage-controller.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "secretusage-controller.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "secretusage-controller.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- else }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -6,69 +35,7 @@ metadata:
   labels:
     {{- include "secretusage-controller.labels" . | nindent 4 }}
 rules:
-  - apiGroups:
-      - usage.secretusage.io
-    resources:
-      - secretusages
-    verbs:
-      - create
-      - delete
-      - get
-      - list
-      - patch
-      - update
-      - watch
-  - apiGroups:
-      - usage.secretusage.io
-    resources:
-      - secretusages/status
-    verbs:
-      - get
-      - patch
-      - update
-  - apiGroups:
-      - ""
-    resources:
-      - pods
-      - replicationcontrollers
-      - secrets
-      - serviceaccounts
-    verbs:
-      - get
-      - list
-      - watch
-  - apiGroups:
-      - apps
-    resources:
-      - daemonsets
-      - deployments
-      - replicasets
-      - statefulsets
-    verbs:
-      - get
-      - list
-      - watch
-  - apiGroups:
-      - batch
-    resources:
-      - cronjobs
-      - jobs
-    verbs:
-      - get
-      - list
-      - watch
-  - apiGroups:
-      - coordination.k8s.io
-    resources:
-      - leases
-    verbs:
-      - create
-      - delete
-      - get
-      - list
-      - patch
-      - update
-      - watch
+  {{- include "secretusage-controller.rules" . | nindent 2 }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -84,4 +51,46 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "secretusage-controller.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- if .Values.leaderElection.enabled }}
+---
+# Leader election leases live in the release namespace only, so they never need
+# cluster-wide lease permissions.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "secretusage-controller.fullname" . }}-leader-election
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "secretusage-controller.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "secretusage-controller.fullname" . }}-leader-election
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "secretusage-controller.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "secretusage-controller.fullname" . }}-leader-election
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "secretusage-controller.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
 {{- end }}
