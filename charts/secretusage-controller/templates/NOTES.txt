@@ -1,5 +1,22 @@
-SecretUsage controller is installed.
+SecretUsage controller is installed{{ if .Values.watchNamespace }} and scoped to namespace {{ .Values.watchNamespace }}{{ end }}.
 
 List tracked Secret usage:
   kubectl get secretusage -A
   kubectl get su -A
+
+Find Secrets that are referenced but do not exist. These break the next restart of
+whatever references them:
+  kubectl get su -A -l usage.secretusage.io/missing=true
+{{- if .Values.tracking.unusedSecrets }}
+
+Find Secrets that exist but nothing references:
+  kubectl get su -A -l usage.secretusage.io/unused=true
+{{- end }}
+
+See every reference to one Secret, including the exact field path:
+  kubectl get su <secret-name> -n <namespace> -o jsonpath='{range .status.usages[*]}{.kind}/{.name} {.fieldPath}{"\n"}{end}'
+{{- if .Values.metrics.enabled }}
+
+Alert on dangling references with:
+  secretusage_secret_exists == 0 and secretusage_secret_references > 0
+{{- end }}

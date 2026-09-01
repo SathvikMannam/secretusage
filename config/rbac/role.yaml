@@ -9,10 +9,16 @@ rules:
   resources:
   - pods
   - replicationcontrollers
-  - secrets
   - serviceaccounts
   verbs:
   - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
   - list
   - watch
 - apiGroups:
@@ -46,6 +52,14 @@ rules:
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - ingresses
+  verbs:
+  - get
+  - list
   - watch
 - apiGroups:
   - usage.secretusage.io

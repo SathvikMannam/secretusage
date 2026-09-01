@@ -45,3 +45,77 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- default "default" .Values.serviceAccount.name -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Policy rules shared by the ClusterRole and the namespaced Role. Secrets are read as
+list and watch only: the controller watches Secret metadata to answer "does this
+Secret exist" and never needs to fetch a Secret body. Rendered at column zero, so
+call sites indent it with nindent.
+*/}}
+{{- define "secretusage-controller.rules" -}}
+- apiGroups:
+    - usage.secretusage.io
+  resources:
+    - secretusages
+  verbs:
+    - create
+    - delete
+    - get
+    - list
+    - patch
+    - update
+    - watch
+- apiGroups:
+    - usage.secretusage.io
+  resources:
+    - secretusages/status
+  verbs:
+    - get
+    - patch
+    - update
+- apiGroups:
+    - ""
+  resources:
+    - secrets
+  verbs:
+    - list
+    - watch
+- apiGroups:
+    - ""
+  resources:
+    - pods
+    - replicationcontrollers
+    - serviceaccounts
+  verbs:
+    - get
+    - list
+    - watch
+- apiGroups:
+    - apps
+  resources:
+    - daemonsets
+    - deployments
+    - replicasets
+    - statefulsets
+  verbs:
+    - get
+    - list
+    - watch
+- apiGroups:
+    - batch
+  resources:
+    - cronjobs
+    - jobs
+  verbs:
+    - get
+    - list
+    - watch
+- apiGroups:
+    - networking.k8s.io
+  resources:
+    - ingresses
+  verbs:
+    - get
+    - list
+    - watch
+{{- end }}

@@ -7,6 +7,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	usagev1alpha1 "github.com/SathvikMannam/secretusage/api/v1alpha1"
@@ -21,6 +22,34 @@ type objectSecretReference struct {
 	Container  string
 	Key        string
 	Optional   *bool
+}
+
+// podControllerKinds are the controller kinds whose pod templates this controller
+// already tracks. A Pod controlled by one of them adds no information that the
+// controller object does not already carry, so its references can be skipped to
+// avoid rewriting SecretUsage status on every pod replacement.
+var podControllerKinds = map[string]struct{}{
+	"apps/v1|ReplicaSet":       {},
+	"apps/v1|StatefulSet":      {},
+	"apps/v1|DaemonSet":        {},
+	"batch/v1|Job":             {},
+	"v1|ReplicationController": {},
+}
+
+// PodIsCoveredByController reports whether a Pod's Secret references are already
+// recorded through a tracked controller object. Standalone Pods, and Pods owned by
+// something this controller does not track, always return false so their references
+// are never lost.
+func PodIsCoveredByController(pod *corev1.Pod) bool {
+	for _, owner := range pod.OwnerReferences {
+		if owner.Controller == nil || !*owner.Controller {
+			continue
+		}
+		if _, ok := podControllerKinds[owner.APIVersion+"|"+owner.Kind]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // SecretNamesForObject returns sorted unique Secret names referenced by obj.
@@ -96,6 +125,8 @@ func referencesForObject(obj client.Object) []objectSecretReference {
 		return referencesForPodSpec(&typed.Spec.Template.Spec, ".spec.template.spec")
 	case *corev1.ServiceAccount:
 		return referencesForServiceAccount(typed)
+	case *networkingv1.Ingress:
+		return referencesForIngress(typed)
 	default:
 		return nil
 	}
@@ -111,27 +142,8 @@ func referencesForPodSpec(spec *corev1.PodSpec, prefix string) []objectSecretRef
 		})
 	}
 
-	for i, volume := range spec.Volumes {
-		volumePath := fmt.Sprintf("%s.volumes[%d]", prefix, i)
-		if volume.Secret != nil {
-			refs = appendReference(refs, objectSecretReference{
-				SecretName: volume.Secret.SecretName,
-				FieldPath:  volumePath + ".secret.secretName",
-				Optional:   copyBoolPtr(volume.Secret.Optional),
-			})
-		}
-		if volume.Projected != nil {
-			for j, source := range volume.Projected.Sources {
-				if source.Secret == nil {
-					continue
-				}
-				refs = appendReference(refs, objectSecretReference{
-					SecretName: source.Secret.Name,
-					FieldPath:  fmt.Sprintf("%s.projected.sources[%d].secret.name", volumePath, j),
-					Optional:   copyBoolPtr(source.Secret.Optional),
-				})
-			}
-		}
+	for i := range spec.Volumes {
+		refs = append(refs, referencesForVolume(&spec.Volumes[i], fmt.Sprintf("%s.volumes[%d]", prefix, i))...)
 	}
 
 	for i := range spec.InitContainers {
@@ -148,6 +160,89 @@ func referencesForPodSpec(spec *corev1.PodSpec, prefix string) []objectSecretRef
 	}
 
 	return dedupeReferences(refs)
+}
+
+// referencesForVolume covers every volume source that names a Secret, including the
+// in-tree storage drivers whose secretRef fields are easy to miss and whose failure
+// mode is a volume that will not mount.
+func referencesForVolume(volume *corev1.Volume, volumePath string) []objectSecretReference {
+	var refs []objectSecretReference
+
+	if volume.Secret != nil {
+		refs = appendReference(refs, objectSecretReference{
+			SecretName: volume.Secret.SecretName,
+			FieldPath:  volumePath + ".secret.secretName",
+			Optional:   copyBoolPtr(volume.Secret.Optional),
+		})
+	}
+	if volume.Projected != nil {
+		for j, source := range volume.Projected.Sources {
+			if source.Secret == nil {
+				continue
+			}
+			refs = appendReference(refs, objectSecretReference{
+				SecretName: source.Secret.Name,
+				FieldPath:  fmt.Sprintf("%s.projected.sources[%d].secret.name", volumePath, j),
+				Optional:   copyBoolPtr(source.Secret.Optional),
+			})
+		}
+	}
+	if volume.CSI != nil && volume.CSI.NodePublishSecretRef != nil {
+		refs = appendReference(refs, objectSecretReference{
+			SecretName: volume.CSI.NodePublishSecretRef.Name,
+			FieldPath:  volumePath + ".csi.nodePublishSecretRef.name",
+		})
+	}
+	if volume.AzureFile != nil {
+		refs = appendReference(refs, objectSecretReference{
+			SecretName: volume.AzureFile.SecretName,
+			FieldPath:  volumePath + ".azureFile.secretName",
+		})
+	}
+	if volume.CephFS != nil && volume.CephFS.SecretRef != nil {
+		refs = appendReference(refs, objectSecretReference{
+			SecretName: volume.CephFS.SecretRef.Name,
+			FieldPath:  volumePath + ".cephfs.secretRef.name",
+		})
+	}
+	if volume.Cinder != nil && volume.Cinder.SecretRef != nil {
+		refs = appendReference(refs, objectSecretReference{
+			SecretName: volume.Cinder.SecretRef.Name,
+			FieldPath:  volumePath + ".cinder.secretRef.name",
+		})
+	}
+	if volume.FlexVolume != nil && volume.FlexVolume.SecretRef != nil {
+		refs = appendReference(refs, objectSecretReference{
+			SecretName: volume.FlexVolume.SecretRef.Name,
+			FieldPath:  volumePath + ".flexVolume.secretRef.name",
+		})
+	}
+	if volume.ISCSI != nil && volume.ISCSI.SecretRef != nil {
+		refs = appendReference(refs, objectSecretReference{
+			SecretName: volume.ISCSI.SecretRef.Name,
+			FieldPath:  volumePath + ".iscsi.secretRef.name",
+		})
+	}
+	if volume.RBD != nil && volume.RBD.SecretRef != nil {
+		refs = appendReference(refs, objectSecretReference{
+			SecretName: volume.RBD.SecretRef.Name,
+			FieldPath:  volumePath + ".rbd.secretRef.name",
+		})
+	}
+	if volume.ScaleIO != nil && volume.ScaleIO.SecretRef != nil {
+		refs = appendReference(refs, objectSecretReference{
+			SecretName: volume.ScaleIO.SecretRef.Name,
+			FieldPath:  volumePath + ".scaleIO.secretRef.name",
+		})
+	}
+	if volume.StorageOS != nil && volume.StorageOS.SecretRef != nil {
+		refs = appendReference(refs, objectSecretReference{
+			SecretName: volume.StorageOS.SecretRef.Name,
+			FieldPath:  volumePath + ".storageos.secretRef.name",
+		})
+	}
+
+	return refs
 }
 
 func referencesForContainer(containerName string, envVars *[]corev1.EnvVar, envFromSources *[]corev1.EnvFromSource, prefix string) []objectSecretReference {
@@ -198,6 +293,20 @@ func referencesForServiceAccount(sa *corev1.ServiceAccount) []objectSecretRefere
 	return dedupeReferences(refs)
 }
 
+// referencesForIngress tracks TLS certificate Secrets. A missing Ingress TLS Secret
+// is one of the highest-impact dangling references in a cluster because it breaks
+// termination for every host in the rule.
+func referencesForIngress(ingress *networkingv1.Ingress) []objectSecretReference {
+	refs := make([]objectSecretReference, 0, len(ingress.Spec.TLS))
+	for i, tls := range ingress.Spec.TLS {
+		refs = appendReference(refs, objectSecretReference{
+			SecretName: tls.SecretName,
+			FieldPath:  fmt.Sprintf(".spec.tls[%d].secretName", i),
+		})
+	}
+	return dedupeReferences(refs)
+}
+
 func appendReference(refs []objectSecretReference, ref objectSecretReference) []objectSecretReference {
 	if ref.SecretName == "" {
 		return refs
@@ -227,8 +336,8 @@ func copyBoolPtr(value *bool) *bool {
 	if value == nil {
 		return nil
 	}
-	copy := *value
-	return &copy
+	copied := *value
+	return &copied
 }
 
 func boolPtrValue(value *bool) string {
@@ -261,6 +370,8 @@ func apiVersionKindForObject(obj client.Object) (string, string) {
 		return batchv1.SchemeGroupVersion.String(), "Job"
 	case *batchv1.CronJob:
 		return batchv1.SchemeGroupVersion.String(), "CronJob"
+	case *networkingv1.Ingress:
+		return networkingv1.SchemeGroupVersion.String(), "Ingress"
 	default:
 		gvk := obj.GetObjectKind().GroupVersionKind()
 		return gvk.GroupVersion().String(), gvk.Kind

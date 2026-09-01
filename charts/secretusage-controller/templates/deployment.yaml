@@ -32,10 +32,16 @@ spec:
         - name: manager
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          {{- if .Values.leaderElection.enabled }}
           args:
+            {{- if .Values.leaderElection.enabled }}
             - --leader-elect
-          {{- end }}
+            {{- end }}
+            - --metrics-bind-address=:{{ .Values.metrics.service.port }}
+            - --health-probe-bind-address=:{{ .Values.healthProbe.port }}
+            - --max-usages={{ .Values.tracking.maxUsages }}
+            - --track-owned-pods={{ .Values.tracking.ownedPods }}
+            - --track-unused-secrets={{ .Values.tracking.unusedSecrets }}
+            - --per-secret-metrics={{ .Values.metrics.perSecret }}
           {{- if .Values.watchNamespace }}
           env:
             - name: WATCH_NAMESPACE
@@ -43,7 +49,7 @@ spec:
           {{- end }}
           ports:
             - name: metrics
-              containerPort: 8080
+              containerPort: {{ .Values.metrics.service.port }}
               protocol: TCP
             - name: health
               containerPort: {{ .Values.healthProbe.port }}

@@ -9,7 +9,23 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
+# Restrict the controller to a single namespace. When set, the chart also renders a
+# namespaced Role instead of a ClusterRole, so the install cannot read Secrets
+# anywhere else.
 watchNamespace: ""
+
+tracking:
+  # Maximum references recorded in one SecretUsage object. Keeps objects well below
+  # the etcd per-object size limit; .status.usageCount always reports the true total
+  # and .status.truncated marks objects where the list was cut short.
+  maxUsages: 500
+  # Record Pods whose references are already covered by their controller. Off by
+  # default: those Pods add no information and their churn rewrites status on every
+  # rollout. Standalone Pods are always recorded regardless of this setting.
+  ownedPods: false
+  # Keep a SecretUsage object for Secrets that exist but are referenced by nothing.
+  # This is what makes unused Secrets reportable, at the cost of one object per Secret.
+  unusedSecrets: true
 
 leaderElection:
   enabled: true
@@ -27,9 +43,13 @@ podLabels: {}
 
 podSecurityContext:
   runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
 
+# The manager writes nothing to disk, so the root filesystem can be read-only.
 securityContext:
   allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
   capabilities:
     drop:
       - ALL
@@ -48,6 +68,9 @@ affinity: {}
 
 metrics:
   enabled: true
+  # Per-Secret gauges cost three series per tracked Secret. Disable on very large
+  # clusters; the aggregate gauges stay available either way.
+  perSecret: true
   service:
     type: ClusterIP
     port: 8080
