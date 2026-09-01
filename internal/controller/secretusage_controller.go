@@ -414,10 +414,10 @@ func (r *SecretUsageReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// and Delete restores an object a user removed by hand.
 	return builder.
 		Watches(&usagev1alpha1.SecretUsage{}, handler.Funcs{
-			CreateFunc: func(ctx context.Context, e event.CreateEvent, q workqueue.RateLimitingInterface) {
+			CreateFunc: func(ctx context.Context, e event.CreateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 				enqueueOwnKey(e.Object, q)
 			},
-			DeleteFunc: func(ctx context.Context, e event.DeleteEvent, q workqueue.RateLimitingInterface) {
+			DeleteFunc: func(ctx context.Context, e event.DeleteEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 				enqueueOwnKey(e.Object, q)
 			},
 		}).
@@ -430,7 +430,7 @@ func secretMetadataObject() *metav1.PartialObjectMetadata {
 	return secret
 }
 
-func enqueueOwnKey(obj client.Object, q workqueue.RateLimitingInterface) {
+func enqueueOwnKey(obj client.Object, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	if obj == nil {
 		return
 	}
@@ -474,23 +474,23 @@ func (r *SecretUsageReconciler) runAggregateMetrics(ctx context.Context) error {
 
 func (r *SecretUsageReconciler) enqueueForSecretConsumer() handler.EventHandler {
 	return handler.Funcs{
-		CreateFunc: func(ctx context.Context, e event.CreateEvent, q workqueue.RateLimitingInterface) {
+		CreateFunc: func(ctx context.Context, e event.CreateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 			r.enqueueObjectSecretReferences(e.Object, q)
 		},
-		UpdateFunc: func(ctx context.Context, e event.UpdateEvent, q workqueue.RateLimitingInterface) {
+		UpdateFunc: func(ctx context.Context, e event.UpdateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 			r.enqueueObjectSecretReferences(e.ObjectOld, q)
 			r.enqueueObjectSecretReferences(e.ObjectNew, q)
 		},
-		DeleteFunc: func(ctx context.Context, e event.DeleteEvent, q workqueue.RateLimitingInterface) {
+		DeleteFunc: func(ctx context.Context, e event.DeleteEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 			r.enqueueObjectSecretReferences(e.Object, q)
 		},
-		GenericFunc: func(ctx context.Context, e event.GenericEvent, q workqueue.RateLimitingInterface) {
+		GenericFunc: func(ctx context.Context, e event.GenericEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 			r.enqueueObjectSecretReferences(e.Object, q)
 		},
 	}
 }
 
-func (r *SecretUsageReconciler) enqueueObjectSecretReferences(obj client.Object, q workqueue.RateLimitingInterface) {
+func (r *SecretUsageReconciler) enqueueObjectSecretReferences(obj client.Object, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	if obj == nil {
 		return
 	}
