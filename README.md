@@ -113,9 +113,7 @@ Or from a local checkout:
 ```sh
 helm install secretusage-controller ./charts/secretusage-controller \
   --namespace secretusage-system \
-  --create-namespace \
-  --set image.repository=docker.io/sathvikm2002/secretusage \
-  --set image.tag=latest
+  --create-namespace
 ```
 
 ### Scoping to one namespace
