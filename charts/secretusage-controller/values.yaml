@@ -3,7 +3,9 @@ replicaCount: 1
 image:
   repository: docker.io/sathvikm2002/secretusage
   pullPolicy: IfNotPresent
-  tag: latest
+  # Empty resolves to .Chart.AppVersion, so a given chart version always deploys the
+  # image built from it. Override only to pin a different build.
+  tag: ""
 
 imagePullSecrets: []
 nameOverride: ""

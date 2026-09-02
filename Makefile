@@ -31,6 +31,21 @@ docker-build:
 docker-push:
 	docker push $(IMG)
 
+# The Dockerfile cross-compiles via BUILDPLATFORM/TARGETARCH, so the published image
+# should cover both common node architectures. This is how releases are built.
+PLATFORMS ?= linux/amd64,linux/arm64
+
+.PHONY: docker-buildx
+docker-buildx:
+	docker buildx build --platform $(PLATFORMS) -t $(IMG) --push .
+
+# Full end-to-end test against a real cluster: installs the chart, creates workloads
+# that reference Secrets every tracked way, and asserts the resulting index.
+# KEEP=1 leaves the lab in place; see hack/lab-test.sh for phases and overrides.
+.PHONY: lab-test
+lab-test:
+	./hack/lab-test.sh
+
 .PHONY: helm-lint
 helm-lint:
 	helm lint $(CHART)

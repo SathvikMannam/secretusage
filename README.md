@@ -113,9 +113,7 @@ Or from a local checkout:
 ```sh
 helm install secretusage-controller ./charts/secretusage-controller \
   --namespace secretusage-system \
-  --create-namespace \
-  --set image.repository=docker.io/sathvikm2002/secretusage \
-  --set image.tag=latest
+  --create-namespace
 ```
 
 ### Scoping to one namespace
@@ -291,4 +289,14 @@ make test           # fmt, vet, unit tests
 make manifests      # regenerate CRD and RBAC from kubebuilder markers
 make helm-lint
 make helm-template
+make lab-test       # end-to-end test against a real cluster
 ```
+
+`make lab-test` installs the chart into throwaway namespaces, creates workloads that
+reference Secrets every tracked way, and asserts the resulting index — owned-Pod
+filtering, unused and dangling detection, truncation, metrics, custom-resource rules,
+and that the controller cannot `get` a Secret. It cleans up after itself; `KEEP=1`
+leaves the lab in place and `./hack/lab-test.sh <phase>` runs a single phase.
+
+It refuses to start if another SecretUsage controller is already running in the
+cluster, since two controllers reconcile the same objects and fight over status.
