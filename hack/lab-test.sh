@@ -40,14 +40,19 @@ warn() { printf '  %s!%s %s\n' "$YELLOW" "$OFF" "$*"; }
 bad()  { printf '  %s✗%s %s\n' "$RED" "$OFF" "$*"; FAILURES=$((FAILURES + 1)); }
 die()  { printf '\n%serror:%s %s\n' "$RED" "$OFF" "$*" >&2; exit 1; }
 
-# Every helm invocation goes through this. fullnameOverride pins the resource names to
-# $RELEASE, because the chart would otherwise prefix them with the chart name and every
-# "deploy/$RELEASE" reference below would miss. It is repeated on upgrades too, since
-# helm upgrade resets values that are not passed again.
-helm_args() {
-  local args=("$CHART" --namespace "$CTRL_NS" --set "fullnameOverride=$RELEASE")
-  [[ -n "$CHART_VERSION" ]] && args+=(--version "$CHART_VERSION")
-  printf '%s\n' "${args[@]}"
+# Populates HELM_ARGS, shared by every helm invocation. fullnameOverride pins the
+# resource names to $RELEASE, because the chart would otherwise prefix them with the
+# chart name and every "deploy/$RELEASE" reference below would miss. It is repeated on
+# upgrades too, since helm upgrade resets values that are not passed again.
+# A global array rather than command substitution keeps this working on bash 3.2,
+# which macOS still ships and which has no mapfile.
+HELM_ARGS=()
+set_helm_args() {
+  HELM_ARGS=("$CHART" --namespace "$CTRL_NS" --set "fullnameOverride=$RELEASE")
+  if [[ -n "$CHART_VERSION" ]]; then
+    HELM_ARGS+=(--version "$CHART_VERSION")
+  fi
+  return 0
 }
 
 # expect DESC EXPECTED COMMAND...  — polls COMMAND until its output equals EXPECTED.
@@ -84,6 +89,39 @@ expect_min() {
     sleep 2
   done
   bad "$desc: expected at least $minimum, got '$actual'"
+  return 0
+}
+
+# expect_log DESC PATTERN — polls the logs of every pod in the release. Targeting
+# "deploy/$RELEASE" instead would pick one arbitrary pod, which races a rolling update
+# and can read the pod from before the upgrade. --tail=-1 because -l defaults to 10.
+release_logs() {
+  kubectl -n "$CTRL_NS" logs -l "app.kubernetes.io/instance=$RELEASE" --tail=-1 2>/dev/null
+}
+
+expect_log() {
+  local desc=$1 pattern=$2
+  local deadline=$((SECONDS + TIMEOUT))
+  while :; do
+    if release_logs | grep -q -- "$pattern"; then
+      ok "$desc"
+      return 0
+    fi
+    ((SECONDS >= deadline)) && break
+    sleep 2
+  done
+  bad "$desc: no log line matching '$pattern'"
+  return 0
+}
+
+expect_no_log() {
+  local desc=$1 pattern=$2 hits
+  hits=$(release_logs | grep -c -- "$pattern" || true)
+  if [[ "$hits" == "0" ]]; then
+    ok "$desc"
+  else
+    bad "$desc: found $hits log line(s) matching '$pattern'"
+  fi
   return 0
 }
 
@@ -126,19 +164,33 @@ $(sed 's/^/    /' <<<"$others")
     fi
   fi
 
+  # An Active namespace is someone else's and must never be adopted, but one left
+  # Terminating by a previous run just needs waiting out, so back-to-back runs work.
   for ns in "$CTRL_NS" "$LAB_NS"; do
-    if kubectl get ns "$ns" >/dev/null 2>&1; then
-      die "namespace $ns already exists. Run '$0 cleanup' first, or set CTRL_NS/LAB_NS."
-    fi
+    local phase_of
+    phase_of=$(kubectl get ns "$ns" -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    case "$phase_of" in
+      "") continue ;;
+      Terminating)
+        printf '  waiting for namespace %s to finish terminating' "$ns"
+        local deadline=$((SECONDS + TIMEOUT))
+        while kubectl get ns "$ns" >/dev/null 2>&1; do
+          ((SECONDS >= deadline)) && { printf '\n'; die "namespace $ns is still terminating after ${TIMEOUT}s"; }
+          printf '.'
+          sleep 3
+        done
+        printf '\n'
+        ;;
+      *) die "namespace $ns already exists and is $phase_of. Run '$0 cleanup' first, or set CTRL_NS/LAB_NS." ;;
+    esac
   done
   ok "namespaces $CTRL_NS and $LAB_NS are free"
 }
 
 install() {
   step "Installing chart"
-  local args
-  mapfile -t args < <(helm_args)
-  helm install "$RELEASE" "${args[@]}" --create-namespace >/dev/null
+  set_helm_args
+  helm install "$RELEASE" "${HELM_ARGS[@]}" --create-namespace >/dev/null
   controller_ready
   ok "controller running from $(kubectl -n "$CTRL_NS" get deploy "$RELEASE" -o jsonpath='{.spec.template.spec.containers[0].image}')"
 }
@@ -273,19 +325,18 @@ ownedpods() {
   expect "only the standalone Pod is indexed" "debug" \
     "kubectl get su db-creds -n $LAB_NS -o jsonpath=\"{range .status.usages[?(@.kind=='Pod')]}{.name}{'\n'}{end}\""
 
-  local before after
+  local before
   before=$(su_field db-creds '{.status.usageCount}')
-  local args
-  mapfile -t args < <(helm_args)
-  helm upgrade "$RELEASE" "${args[@]}" --set tracking.ownedPods=true >/dev/null
+  set_helm_args
+  helm upgrade "$RELEASE" "${HELM_ARGS[@]}" --set tracking.ownedPods=true >/dev/null
   controller_ready
   expect_min "usageCount grows with tracking.ownedPods=true" $((before + 1)) \
     "su_field db-creds '{.status.usageCount}'"
 
-  helm upgrade "$RELEASE" "${args[@]}" --set tracking.ownedPods=false >/dev/null
+  helm upgrade "$RELEASE" "${HELM_ARGS[@]}" --set tracking.ownedPods=false >/dev/null
   controller_ready
-  after=$(su_field db-creds '{.status.usageCount}')
-  ok "reverted to owned-Pod filtering (usageCount $after)"
+  expect "usageCount returns to the filtered count" "$before" \
+    "su_field db-creds '{.status.usageCount}'"
 }
 
 unused() {
@@ -328,16 +379,15 @@ EOF
   done
   expect "pull-creds picks up all ServiceAccounts" 7 "su_field pull-creds '{.status.usageCount}'"
 
-  local args
-  mapfile -t args < <(helm_args)
-  helm upgrade "$RELEASE" "${args[@]}" --set tracking.maxUsages=3 >/dev/null
+  set_helm_args
+  helm upgrade "$RELEASE" "${HELM_ARGS[@]}" --set tracking.maxUsages=3 >/dev/null
   controller_ready
   expect "truncated flag set" "true" "su_field pull-creds '{.status.truncated}'"
   expect "usageCount still reports the true total" 7 "su_field pull-creds '{.status.usageCount}'"
   expect "recorded list is capped" 3 \
     "kubectl get su pull-creds -n $LAB_NS -o jsonpath='{.status.usages[*].name}' | wc -w | tr -d ' '"
 
-  helm upgrade "$RELEASE" "${args[@]}" --set tracking.maxUsages=500 >/dev/null
+  helm upgrade "$RELEASE" "${HELM_ARGS[@]}" --set tracking.maxUsages=500 >/dev/null
   controller_ready
   expect "untruncated after raising the cap" "" "su_field pull-creds '{.status.truncated}'"
 }
@@ -408,18 +458,13 @@ customRules:
     paths:
       - .spec.secretName
 EOF
-  local args
-  mapfile -t args < <(helm_args)
-  helm upgrade "$RELEASE" "${args[@]}" -f "$values" >/dev/null
+  set_helm_args
+  helm upgrade "$RELEASE" "${HELM_ARGS[@]}" -f "$values" >/dev/null
   rm -f "$values"
   controller_ready
 
-  local logs
-  logs=$(kubectl -n "$CTRL_NS" logs "deploy/$RELEASE" 2>/dev/null || true)
-  grep -q 'tracking custom resource' <<<"$logs" && ok "Widget rule registered" ||
-    bad "no 'tracking custom resource' log line"
-  grep -q 'skipping rule' <<<"$logs" && ok "absent cert-manager CRD skipped, not fatal" ||
-    bad "no 'skipping rule' log line for the absent CRD"
+  expect_log "Widget rule registered" "tracking custom resource"
+  expect_log "absent cert-manager CRD skipped, not fatal" "skipping rule"
 
   kubectl create secret generic widget-secret -n "$LAB_NS" --from-literal=k=v >/dev/null
   kubectl apply -n "$LAB_NS" -f - >/dev/null <<EOF
@@ -443,6 +488,7 @@ rbac() {
   # Existence is answered from the metadata informer, so fetching a Secret body is
   # a permission the controller never needs.
   expect "may NOT get Secrets" "no" "kubectl auth can-i get secrets --as=$sa -A 2>/dev/null || true"
+  expect_no_log "no API permission denials in the controller log" "is forbidden"
 }
 
 cleanup() {
@@ -452,7 +498,7 @@ cleanup() {
   kubectl delete crd "widgets.$CRD_GROUP" --wait=false >/dev/null 2>&1 || true
   # The SecretUsage CRD is intentionally left alone: helm does not remove CRDs, and
   # another install may be using it.
-  ok "removed $RELEASE, $LAB_NS, $CTRL_NS and the Widget CRD"
+  ok "removed release $RELEASE, namespaces $LAB_NS and $CTRL_NS, and the Widget CRD"
 }
 
 main() {
