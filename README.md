@@ -103,7 +103,7 @@ Behaviour worth knowing:
 ```sh
 helm install secretusage-controller \
   oci://registry-1.docker.io/sathvikm2002/secretusage-controller \
-  --version 0.3.0 \
+  --version 0.3.1 \
   --namespace secretusage-system \
   --create-namespace
 ```
