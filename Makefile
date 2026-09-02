@@ -31,6 +31,13 @@ docker-build:
 docker-push:
 	docker push $(IMG)
 
+# Full end-to-end test against a real cluster: installs the chart, creates workloads
+# that reference Secrets every tracked way, and asserts the resulting index.
+# KEEP=1 leaves the lab in place; see hack/lab-test.sh for phases and overrides.
+.PHONY: lab-test
+lab-test:
+	./hack/lab-test.sh
+
 .PHONY: helm-lint
 helm-lint:
 	helm lint $(CHART)
